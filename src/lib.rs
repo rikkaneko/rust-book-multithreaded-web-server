@@ -1,6 +1,6 @@
 /*
  * This file is part of rust-book-multithreaded-web-server.
- * Copyright (c) 2021-2021 Joe Ma <rikkaneko23@gmail.com>
+ * Copyright (c) 2021 Joe Ma <rikkaneko23@gmail.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -56,10 +56,8 @@ impl ThreadPool {
 		let job = Box::new(f);
 		self.sender.send(Message::Job(job)).unwrap();
 	}
-}
-
-impl Drop for ThreadPool {
-	fn drop(&mut self) {
+	
+	pub fn terminate(&mut self) {
 		for worker in &self.workers {
 			println!("Send termination signal to Work {}", worker.id);
 			self.sender.send(Message::Terminate).unwrap();
@@ -69,8 +67,15 @@ impl Drop for ThreadPool {
 			if let Some(thread) = worker.thread.take() {
 				thread.join().unwrap();
 			}
-			println!("Worker {} terminated.", worker.id);
 		}
+		
+		self.workers.clear();
+	}
+}
+
+impl Drop for ThreadPool {
+	fn drop(&mut self) {
+		self.terminate();
 	}
 }
 

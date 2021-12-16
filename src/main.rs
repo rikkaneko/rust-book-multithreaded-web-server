@@ -1,6 +1,6 @@
 /*
  * This file is part of rust-book-multithreaded-web-server.
- * Copyright (c) 2021-2021 Joe Ma <rikkaneko23@gmail.com>
+ * Copyright (c) 2021 Joe Ma <rikkaneko23@gmail.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -16,15 +16,21 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#![allow(clippy::unused_io_amount)]
 use lazy_static::lazy_static;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::fs;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration};
 use regex::Regex;
 use rust_book_multithreaded_web_server::ThreadPool;
-use chrono::{DateTime, Local};
+use chrono::{Local};
+use signal_hook::{consts::{SIGINT, SIGTERM}};
+use signal_hook::iterator::Signals;
+use std::sync::mpsc;
+use nix::unistd::Pid;
+use nix::sys::signal::{self, Signal};
 
 lazy_static! {
 	static ref RESPONSE_TEXT_HOME: String = fs::read_to_string("hello_from_rs.html").unwrap();
@@ -38,7 +44,7 @@ fn handle_stream(mut stream: TcpStream) {
 	let mut buf = [0; 1024];
 	stream.read(&mut buf).unwrap();
 	let request = String::from_utf8_lossy(&buf);
-	let (method, uri) = parse_header(&request);
+	let (method, uri) = parse_header(request.as_ref());
 	let _uri = RE_SLASH.replace_all(uri, "/");
 	let uri = _uri.as_ref();
 	if method.is_empty() || uri.is_empty() { return }
@@ -51,7 +57,7 @@ fn handle_stream(mut stream: TcpStream) {
 					"HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
 					RESPONSE_TEXT_HOME.len(), RESPONSE_TEXT_HOME.as_str()),
 			
-			"/auth" => response = format!(
+			"/error" => response = format!(
 					"HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\n\r\n{}",
 					RESPONSE_TEXT_403.len(), RESPONSE_TEXT_403.as_str()),
 			
@@ -76,11 +82,18 @@ fn handle_stream(mut stream: TcpStream) {
 					8, "Success\n"),
 			
 			"/sleep" => {
-				thread::sleep(Duration::from_millis(5000));
+				thread::sleep(Duration::from_millis(10000));
 				response = format!(
 					"HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
 					8, "Success\n");
 			},
+			
+			"/kill_server" => {
+				response = format!(
+					"HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+					18, "Success, Bye bye!\n");
+					signal::kill(Pid::this(), Signal::SIGTERM).unwrap();
+			}
 			
 			_ => response = format!(
 					"HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\n\r\n{}",
@@ -105,13 +118,32 @@ fn parse_header(text: &str) -> (&str, &str) {
 }
 
 fn main() {
+	let mut signals = Signals::new(&[SIGINT, SIGTERM]).unwrap();
 	let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
-	let thread_pool = ThreadPool::new(8);
+	let mut thread_pool = ThreadPool::new(12);
+	let (sender, receiver) = mpsc::channel();
+	listener.set_nonblocking(true).unwrap();
+	
+	thread::spawn(move || {
+		for _ in signals.forever() {
+			sender.send(true).unwrap();
+		}
+	});
+	
 	for stream in listener.incoming() {
-		let stream = stream.unwrap();
-		// handle_stream(stream);
-		thread_pool.execute(||{
-			handle_stream(stream);
-		});
+		if let Ok(stream) = stream {
+			thread_pool.execute(|| {
+				handle_stream(stream);
+			});
+		}
+		
+		if let Ok(_) = receiver.try_recv() {
+			break;
+		}
+		
+		thread::sleep(Duration::from_millis(100));
 	}
+	
+	thread_pool.terminate();
+	println!("Server terminated, Bye bye!");
 }
